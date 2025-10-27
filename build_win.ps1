@@ -19,7 +19,9 @@ if (Test-Path "icon.ico") { $iconArg += @("--icon", "icon.ico") }
 $pyiArgs = @(
   "--onefile",
   "--windowed",
-  "--name", "LabelApp"
+  "--name", "LabelApp",
+  "--hidden-import", "label_app",
+  "--paths", "src"
 ) + $iconArg + $addDataArgs + @("src/launcher.py")
 
 pyinstaller @pyiArgs
