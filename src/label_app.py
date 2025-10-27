@@ -4,7 +4,7 @@
 """
 批量（每行生成一个文件）—— KMART + TARGET 合并脚本（打包友好版）
 更新要点：
-- E9：保持模板原样，不写入（不覆盖）
+- 若所选文件的最后一行是“汇总/合计/总计”，则跳过该行（不生成）
 - E10：每个维度（长/宽/高）有小数则保留小数；无小数则为整数
 - 其余行为同前版本（A7/A8/B9/A10/A11/A12/A13/C12/C14、文件名等）
 """
@@ -185,6 +185,22 @@ def main():
         messagebox.showerror("读取失败", f"无法读取 Excel：{e}")
         sys.exit(1)
 
+    # ---- NEW: drop trailing blank rows and skip the final summary row ----
+    def is_blank_row(r):
+        return all(pd.isna(v) or str(v).strip() == "" for v in r.values)
+
+    last_idx = len(df) - 1
+    # ignore trailing blank rows
+    while last_idx >= 0 and is_blank_row(df.iloc[last_idx]):
+        last_idx -= 1
+
+    if last_idx >= 0:
+        # check if last meaningful row contains 汇总/合计/总计 in any cell
+        joined = "".join(str(v).strip() for v in df.iloc[last_idx].values if not pd.isna(v))
+        if any(kw in joined for kw in ("汇总", "合计", "总计")):
+            print(f"ℹ️ 检测到最后一行为汇总/合计（第 {last_idx+1} 行），已跳过该行生成。")
+            df = df.iloc[:last_idx]
+
     need_cols = ["销售合同", "客户合同", "客户简称", "中文品名", "产品编号", "英文品名", "合同数量", "单箱"]
     miss_cols = [c for c in need_cols if c not in df.columns]
     if miss_cols:
@@ -246,7 +262,10 @@ def main():
                 ws["A12"].value = f"QTY ISSUE PACK: {fmt_intlike(pcs_eachN)} pcs Only"
                 ws["A13"].value = f"QTY SHIPPER PACK: {fmt_intlike(pcs_eachN)} pcs Only"
 
-                # E9：保持模板原样（不写入）
+                # E9（保持你上一版的写法；若要严格按“GRS.WT.:   {毛重}  KGS”可再改空格）
+                gross_wt = s(row.get("毛重", ""))
+                ws["E9"].value = f"GRS.WT.: {gross_wt} KGS"
+
                 # E10：维度
                 ws["E10"].value = f"D:{length_v}×{width_v}×{height_v}CMS"
 
@@ -273,7 +292,9 @@ def main():
                 # A11
                 ws["A11"].value = f"DESCRIPTION：{j_ename}" if j_ename else "DESCRIPTION："
 
-                # E9：保持模板原样（不写入）
+                # （你这版保留了 TARGET 的 E9 模板原样；如也要写入毛重，就复用 KMART 的两行）
+                # ws["E9"].value = f"GRS.WT.: {gross_wt} KGS"
+
                 # E10：维度
                 ws["E10"].value = f"D:{length_v}×{width_v}×{height_v}CMS"
 
