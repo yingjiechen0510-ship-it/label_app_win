@@ -1,14 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""
-批量（每行生成一个文件）—— KMART + TARGET 合并脚本（打包友好版）
-更新要点：
-- 若所选文件的最后一行是“汇总/合计/总计”，则跳过该行（不生成）
-- E10：每个维度（长/宽/高）有小数则保留小数；无小数则为整数
-- 其余行为同前版本（A7/A8/B9/A10/A11/A12/A13/C12/C14、文件名等）
-"""
-
 import os
 import sys
 import re
@@ -226,6 +218,9 @@ def main():
             qty_total = fnum(row["合同数量"])       # 合同数量
             pcs_eachN = fnum(row["单箱"])          # 单箱
 
+            # 👉 统一在这里取毛重，KMART/TG 都能用
+            gross_wt = s(row.get("毛重", ""))
+
             # 装箱数：合同数量 ÷ 单箱
             if qty_total is not None and pcs_eachN not in (None, 0):
                 carton_count = round(qty_total / pcs_eachN, 2)
@@ -262,8 +257,7 @@ def main():
                 ws["A12"].value = f"QTY ISSUE PACK: {fmt_intlike(pcs_eachN)} pcs Only"
                 ws["A13"].value = f"QTY SHIPPER PACK: {fmt_intlike(pcs_eachN)} pcs Only"
 
-                # E9（保持你上一版的写法；若要严格按“GRS.WT.:   {毛重}  KGS”可再改空格）
-                gross_wt = s(row.get("毛重", ""))
+                # E9：毛重
                 ws["E9"].value = f"GRS.WT.: {gross_wt} KGS"
 
                 # E10：维度
@@ -292,8 +286,9 @@ def main():
                 # A11
                 ws["A11"].value = f"DESCRIPTION：{j_ename}" if j_ename else "DESCRIPTION："
 
-                # （你这版保留了 TARGET 的 E9 模板原样；如也要写入毛重，就复用 KMART 的两行）
-                # ws["E9"].value = f"GRS.WT.: {gross_wt} KGS"
+                # 👉 TARGET 也写入毛重（若本行有毛重）
+                if gross_wt:
+                    ws["E9"].value = f"GRS.WT.: {gross_wt} KGS"
 
                 # E10：维度
                 ws["E10"].value = f"D:{length_v}×{width_v}×{height_v}CMS"
