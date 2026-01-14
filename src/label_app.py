@@ -7,12 +7,11 @@ import re
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
-import pandas as pd
 from openpyxl import load_workbook
 
 KMART_TEMPLATE  = "KMART模板.xlsx"
 TARGET_TEMPLATE = "TARGET模板.xlsx"
-SUPPORTED_EXTS  = (".xlsx", ".xls")
+SUPPORTED_EXTS  = (".xlsx",)  # 只支持 xlsx（32bit 友好）
 
 
 # ---------- 打包友好：读取内置资源 ----------
@@ -28,7 +27,7 @@ def choose_excel_file() -> str:
     try:
         file_path = filedialog.askopenfilename(
             title="请选择 Excel 文件（需含：销售合同/客户合同/客户简称/中文品名/产品编号/英文品名/合同数量/单箱 等列）",
-            filetypes=[("Excel 文件", (".xlsx", ".xls")), ("所有文件", "*")],
+            filetypes=[("Excel 文件", (".xlsx",)), ("所有文件", "*")],
         )
     finally:
         try:
@@ -43,20 +42,31 @@ def choose_excel_file() -> str:
 
     ext = os.path.splitext(file_path)[1].lower()
     if ext not in SUPPORTED_EXTS:
-        messagebox.showerror("文件类型错误", f"请选择 .xlsx/.xls（当前：{ext}）")
+        messagebox.showerror("文件类型错误", f"请选择 .xlsx（当前：{ext}）")
         sys.exit(1)
 
     return os.path.normpath(file_path)
 
 
+def is_na(v) -> bool:
+    return v is None or (isinstance(v, str) and v.strip() == "")
+
+
 def s(v) -> str:
-    if pd.isna(v):
+    if v is None:
         return ""
     return str(v).strip()
 
 
 def fnum(v):
     try:
+        if v is None:
+            return None
+        if isinstance(v, str):
+            vv = v.replace(",", "").strip()
+            if vv == "":
+                return None
+            return float(vv)
         return float(v)
     except Exception:
         return None
@@ -137,7 +147,7 @@ def fmt_dim(val) -> str:
     - 若有小数（21.5、21.50）→ 去除多余的尾随 0（'21.5'）
     - 无法解析数字则原样返回
     """
-    if pd.isna(val) or val is None:
+    if val is None:
         return ""
     raw = str(val).strip()
     if raw == "":
@@ -156,6 +166,29 @@ def fmt_dim(val) -> str:
     return sflt
 
 
+def read_xlsx_as_dict_rows(path: str):
+    wb = load_workbook(path, data_only=True)
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return [], []
+
+    header = [("" if c is None else str(c).strip()) for c in rows[0]]
+    data_rows = []
+    for r in rows[1:]:
+        d = {}
+        for i, col in enumerate(header):
+            if col == "":
+                continue
+            d[col] = r[i] if i < len(r) else None
+        data_rows.append(d)
+    return header, data_rows
+
+
+def is_blank_row_dict(d: dict) -> bool:
+    return all(is_na(v) for v in d.values())
+
+
 # ---------- 主流程 ----------
 def main():
     kmart_tpl  = resource_path(KMART_TEMPLATE)
@@ -171,57 +204,51 @@ def main():
 
     in_path = choose_excel_file()
     out_dir = os.path.dirname(in_path)
+
     try:
-        df = pd.read_excel(in_path)
+        header, data_rows = read_xlsx_as_dict_rows(in_path)
     except Exception as e:
         messagebox.showerror("读取失败", f"无法读取 Excel：{e}")
         sys.exit(1)
 
-    # ---- NEW: drop trailing blank rows and skip the final summary row ----
-    def is_blank_row(r):
-        return all(pd.isna(v) or str(v).strip() == "" for v in r.values)
-
-    last_idx = len(df) - 1
-    # ignore trailing blank rows
-    while last_idx >= 0 and is_blank_row(df.iloc[last_idx]):
+    # ---- drop trailing blank rows and skip the final summary row ----
+    last_idx = len(data_rows) - 1
+    while last_idx >= 0 and is_blank_row_dict(data_rows[last_idx]):
         last_idx -= 1
 
     if last_idx >= 0:
-        # check if last meaningful row contains 汇总/合计/总计 in any cell
-        joined = "".join(str(v).strip() for v in df.iloc[last_idx].values if not pd.isna(v))
+        joined = "".join(str(v).strip() for v in data_rows[last_idx].values() if v is not None)
         if any(kw in joined for kw in ("汇总", "合计", "总计")):
-            print(f"ℹ️ 检测到最后一行为汇总/合计（第 {last_idx+1} 行），已跳过该行生成。")
-            df = df.iloc[:last_idx]
+            print(f"ℹ️ 检测到最后一行为汇总/合计（第 {last_idx+2} 行），已跳过该行生成。")
+            data_rows = data_rows[:last_idx]
 
     need_cols = ["销售合同", "客户合同", "客户简称", "中文品名", "产品编号", "英文品名", "合同数量", "单箱"]
-    miss_cols = [c for c in need_cols if c not in df.columns]
+    miss_cols = [c for c in need_cols if c not in header]
     if miss_cols:
         messagebox.showerror("列缺失", f"输入文件缺少列：{miss_cols}")
         sys.exit(1)
 
-    def get_height_raw(row):
-        if "高" in row.index:
-            return row["高"]
-        if "髙" in row.index:
-            return row["髙"]
+    def get_height_raw(row: dict):
+        if "高" in row:
+            return row.get("高")
+        if "髙" in row:
+            return row.get("髙")
         return ""
 
     success, failed = 0, 0
-    for idx, row in df.iterrows():
+    for idx, row in enumerate(data_rows):
         try:
-            e_sales   = s(row["销售合同"])         # E
-            f_order   = s(row["客户合同"])         # F
-            g_client  = s(row["客户简称"])         # G
-            h_cname   = s(row["中文品名"])         # H
-            i_prod    = s(row["产品编号"])         # I
-            j_ename   = s(row["英文品名"])         # J（英文品名）
-            qty_total = fnum(row["合同数量"])       # 合同数量
-            pcs_eachN = fnum(row["单箱"])          # 单箱
+            e_sales   = s(row.get("销售合同"))         # E
+            f_order   = s(row.get("客户合同"))         # F
+            g_client  = s(row.get("客户简称"))         # G
+            h_cname   = s(row.get("中文品名"))         # H
+            i_prod    = s(row.get("产品编号"))         # I
+            j_ename   = s(row.get("英文品名"))         # J
+            qty_total = fnum(row.get("合同数量"))       # 合同数量
+            pcs_eachN = fnum(row.get("单箱"))          # 单箱
 
-            # 👉 统一在这里取毛重，KMART/TG 都能用
             gross_wt = s(row.get("毛重", ""))
 
-            # 装箱数：合同数量 ÷ 单箱
             if qty_total is not None and pcs_eachN not in (None, 0):
                 carton_count = round(qty_total / pcs_eachN, 2)
             else:
@@ -229,74 +256,51 @@ def main():
 
             is_kmart_row = ("KMART" in g_client.upper())
 
-            # 维度（E10 使用）
             length_v = fmt_dim(row.get("长", ""))
             width_v  = fmt_dim(row.get("宽", ""))
             height_v = fmt_dim(get_height_raw(row))
             dept3    = last_three_digits_padded(g_client)
 
             if is_kmart_row:
-                # ---------- KMART ----------
                 wb = load_workbook(kmart_tpl)
                 ws = wb[wb.sheetnames[0]]
 
-                # A7 / A8
                 a7_val = "NZ" if "NZ" in e_sales.upper() else "AU"
                 ws["A7"].value = a7_val
                 ws["A8"].value = f"DEPARTMENT NO.:{dept3}"
 
-                # B9（订单号，整数样式）
                 ws["B9"].value = fmt_intlike(f_order)
 
-                # A10 / A11
                 key_digits = before_bracket_digits(i_prod)
                 ws["A10"].value = f"KEYCODE: {key_digits}" if key_digits else "KEYCODE:"
                 ws["A11"].value = f"DESCRIPTION：{j_ename}" if j_ename else "DESCRIPTION："
 
-                # A12 / A13（单箱，整数样式）
                 ws["A12"].value = f"QTY ISSUE PACK: {fmt_intlike(pcs_eachN)} pcs Only"
                 ws["A13"].value = f"QTY SHIPPER PACK: {fmt_intlike(pcs_eachN)} pcs Only"
 
-                # E9：毛重
                 ws["E9"].value = f"GRS.WT.: {gross_wt} KGS"
-
-                # E10：维度
                 ws["E10"].value = f"D:{length_v}×{width_v}×{height_v}CMS"
 
-                # C14 = 合同数量 ÷ 单箱
                 ws["C14"].value = carton_count
 
-                # 文件名
                 out_name = f"{e_sales} {key_digits}#{h_cname} 唛头（{a7_val}）.xlsx"
 
             else:
-                # ---------- TARGET ----------
                 wb = load_workbook(target_tpl)
                 ws = wb[wb.sheetnames[0]]
 
-                # A8
                 ws["A8"].value = f"DEPARTMENT NO.:{dept3}"
-
-                # B9（订单号，整数样式）
                 ws["B9"].value = fmt_intlike(f_order)
 
-                # A10 追加 I 的括号内内容
                 append_keycode_to_a10(ws, extract_inside_brackets(i_prod))
-
-                # A11
                 ws["A11"].value = f"DESCRIPTION：{j_ename}" if j_ename else "DESCRIPTION："
 
-                # 👉 TARGET 也写入毛重（若本行有毛重）
                 if gross_wt:
                     ws["E9"].value = f"GRS.WT.: {gross_wt} KGS"
 
-                # E10：维度
                 ws["E10"].value = f"D:{length_v}×{width_v}×{height_v}CMS"
-
-                # C12 = 合同数量 ÷ 单箱
                 ws["C12"].value = carton_count
 
-                # 文件名
                 out_name = f"{e_sales} {i_prod}#{h_cname} 唛头（TG）.xlsx"
 
             out_name = sanitize_filename(out_name)
@@ -304,11 +308,11 @@ def main():
 
             wb.save(out_path)
             success += 1
-            print(f"✅ 第 {idx+1} 行完成 → {os.path.basename(out_path)}")
+            print(f"✅ 第 {idx+2} 行完成 → {os.path.basename(out_path)}")
 
         except Exception as e:
             failed += 1
-            print(f"❌ 第 {idx+1} 行失败：{e}")
+            print(f"❌ 第 {idx+2} 行失败：{e}")
 
     print(f"\n🎉 完成：成功 {success} 个，失败 {failed} 个。保存路径：{out_dir}")
 
