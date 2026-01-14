@@ -17,6 +17,6 @@ pyinstaller --onefile --noconsole `
   --name "LabelApp-$Arch" `
   --add-data "KMART模板.xlsx;." `
   --add-data "TARGET模板.xlsx;." `
-  "src\launcher.py"
+  "src\label_app.py"
 
 Write-Host "Built: dist\LabelApp-$Arch.exe"
